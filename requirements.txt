@@ -4,3 +4,4 @@ pandas
 numpy
 groq
 pip install plotly holidays requests
+pip install streamlit-geolocation
