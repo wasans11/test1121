@@ -127,7 +127,7 @@ if "prediction" in st.session_state:
 추천 발주: {boxes}박스 ({order_qty}개)
 """
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": "당신은 소매점 재고·발주 데이터를 설명하는 도우미입니다. 계산을 새로 만들지 말고 주어진 수치만 설명하세요."},
                     {"role": "user", "content": prompt},
