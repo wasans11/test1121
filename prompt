@@ -113,21 +113,9 @@ if "prediction" in st.session_state:
             from groq import Groq
             api_key = st.secrets["GROQ_API_KEY"]
             client = Groq(api_key=api_key)
-prompt = f"""무인 아이스크림 매장 발주 추천 결과를 점주에게 한국어로 짧고 명확하게 설명하세요.
-모델 예측값과 발주 계산을 그대로 설명하고, 예측을 확정적 사실처럼 표현하지 마세요.
-입력: {pred['input']}
-평균 예측: {pred['mean']:.2f}
-10% 분위수: {pred['low']:.2f}
-90% 분위수: {pred['high']:.2f}
-선택 기준: {mode}
-입고까지 일수: {days}
-예상 수요: {expected_demand:.2f}
-현재 재고: {stock}
-입고 예정: {incoming}
-추천 발주: {boxes}박스 ({order_qty}개)
-prompt = f"""당신은 무인 매장 점주를 돕는 발주 해석 도우미입니다.
-어려운 통계·머신러닝 용어나 발주 계산식을 그대로 나열하지 말고, 점주가 직관적으로 이해할 수 있게 쉽게 설명하세요.
-예측값은 추정치일 뿐 확정된 미래가 아님을 자연스럽게 반영하세요.
+prompt = f"""무인 매장 점주에게 발주 판단을 쉽게 돕는 브리핑을 한국어로 작성하세요.
+계산식이나 발주 수량 도출 과정을 다시 나열하지 말고, 점주가 직관적으로 이해할 수 있게 쉽게 설명하세요.
+예측값은 추정치일 뿐 실제 판매를 보장하지 않음을 자연스럽게 반영하세요.
 
 [매장 및 품목 정보]
 - 입력 조건: {pred['input']}
@@ -140,19 +128,23 @@ prompt = f"""당신은 무인 매장 점주를 돕는 발주 해석 도우미입
 - 현재 재고: {stock}개 / 입고 예정: {incoming}개
 - 최종 추천 발주: {boxes}박스 ({order_qty}개)
 
-아래 형식으로 한국어 4~5줄 이내로 간결하게 작성해 주세요.
+아래 형식으로 4~5줄 이내로 간결하게 작성해 주세요.
 - **한 줄 요약:** 현재 재고 상태와 추천 발주 판단을 쉬운 말로 한 문장 요약
 - **수요 변동성:** 평균 대비 낮게/높게 팔릴 가능성의 폭을 점주 눈높이로 설명
 - **확인할 점:** 날씨·시간대·재고 오차 등 현장에서 눈여겨볼 포인트 1가지
 """
-            response = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=[
-                    {"role": "system", "content": "당신은 소매점 재고·발주 데이터를 설명하는 도우미입니다. 계산을 새로 만들지 말고 주어진 수치만 설명하세요."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-            )
+
+response = client.chat.completions.create(
+    model="openai/gpt-oss-120b",
+    messages=[
+        {
+            "role": "system",
+            "content": "당신은 무인 매장 점주를 돕는 발주 해석 도우미입니다. 계산식을 반복하지 말고 주어진 수치의 의미와 현장 리스크를 쉬운 말로 풀어주세요.",
+        },
+        {"role": "user", "content": prompt},
+    ],
+    temperature=0.3,
+)
             st.write(response.choices[0].message.content)
         except KeyError:
             st.error("Streamlit Secrets에 GROQ_API_KEY를 등록하세요.")
