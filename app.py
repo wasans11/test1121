@@ -311,14 +311,7 @@ if override_weather:
         calc_discomfort_index(t, h) for t, h in zip(weather_df["기온"], weather_df["습도"])
     ]
 
-# ── 5. 상단 배너 & 실시간 자동 조회 요약 ──
 now_str = now_kst_naive().strftime("%Y-%m-%d %H:%M KST")
-st.title("🧊 무잉 발주 추천 프로토타입")
-st.caption(
-    f"매장 **{selected_store}** ({store_type}) · 위치: **{location_source}** · "
-    f"기준시각 **{now_str}** · 입고 대기 **{lead_days}일** · 기상: `{weather_df['기상출처'].iloc[0]}`"
-)
-
 lead_hours = lead_days * 24
 w_lead = weather_df.iloc[:lead_hours]
 avg_t = float(w_lead["기온"].mean())
@@ -328,18 +321,19 @@ avg_di = float(w_lead["불쾌지수"].mean())
 tot_r = float(w_lead["강수량"].sum())
 di_label = "매우높음" if avg_di >= 80 else ("높음" if avg_di >= 75 else ("보통" if avg_di >= 68 else "쾌적"))
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric(f"향후 {lead_days}일 평균/최고 기온", f"{avg_t:.1f}°C", f"최고 {max_t:.1f}°C")
-m2.metric(f"향후 {lead_days}일 평균 습도", f"{avg_h:.0f}%")
-m3.metric("자동 계산 불쾌지수", f"{avg_di:.1f}", di_label)
-m4.metric(f"향후 {lead_days}일 누적 강수", f"{tot_r:.1f} mm", "우천 대비" if tot_r >= 5 else "강수 적음")
+st.title("🧊 무잉 발주 도우미")
+st.caption(f"{selected_store} 매장 · {now_str} · 다음 입고까지 {lead_days}일")
+st.markdown(
+    f"🌡️ 앞으로 {lead_days}일 날씨: 평균 **{avg_t:.0f}°C** (최고 {max_t:.0f}°C) · "
+    f"비 **{tot_r:.0f}mm** · 습도 {avg_h:.0f}%"
+)
 
-with st.expander("🔍 모델에 자동 입력되는 미래 시간별 기상·달력 데이터 미리보기 (수동 입력 불필요)"):
-    preview_cols = [
-        "datetime", "월", "일", "시", "기온", "강수량", "습도", "풍속",
-        "불쾌지수", "주말", "공휴일", "연휴", "기상출처",
-    ]
-    st.dataframe(weather_df[preview_cols].head(24), use_container_width=True)
+# 화면 순서: AI 도우미 → 이번 발주 → 그림 → 직접 고치기 → 분석가용 상세
+ai_box = st.container()
+order_box = st.container()
+viz_box = st.container()
+edit_box = st.container()
+detail_box = st.container()
 
 # ── 6. 전 품목 × 향후 168시간 일괄 예측 ──
 batch_rows = []
@@ -411,7 +405,6 @@ for it_name in selected_items:
         "상위90%": round(hi_sum, 1),
     })
 pred_summary_df = pd.DataFrame(summary_rows)
-
 # ── 8. 세션 상태 초기화 (매장별 재고, 입고예정, 입수, 점주수정, 로그) ──
 if "inventory_state" not in st.session_state:
     st.session_state["inventory_state"] = {}
@@ -431,25 +424,19 @@ for _, r in pred_summary_df.iterrows():
             "점주수정": np.nan,
         }
 
-# ── 9. 예측 기준 선택 ──
-st.subheader("1. 예측 기준 선택")
-mode_label = st.radio(
-    "발주 성향을 선택하세요 (선택 즉시 전 품목 추천 박스 수량이 재계산됩니다)",
-    ["품절 방지 (상위 90%)", "기본 (평균)", "폐기 최소 (하위 10%)"],
-    index=1,
-    horizontal=True,
-)
+with order_box:
+    st.subheader("① 이번 발주")
+    mode_label = st.radio(
+        "발주 스타일",
+        ["넉넉하게 (품절 걱정 없이)", "보통", "알뜰하게 (남는 재고 적게)"],
+        index=1,
+        horizontal=True,
+    )
 mode_col = {
-    "품절 방지 (상위 90%)": "상위90%",
-    "기본 (평균)": "예측(평균)",
-    "폐기 최소 (하위 10%)": "하위10%",
+    "넉넉하게 (품절 걱정 없이)": "상위90%",
+    "보통": "예측(평균)",
+    "알뜰하게 (남는 재고 적게)": "하위10%",
 }[mode_label]
-
-# ── 10. 재고 조정 → 발주안 → 점주 수정 ──
-st.subheader("2. 재고 조정 → 발주안 → 점주 수정")
-c_rsn, c_tip = st.columns([1, 3])
-reason = c_rsn.selectbox("재고 조정 사유", ["실사 차이", "파손", "분실", "폐기", "미도착"])
-c_tip.info("표의 **재고, 입고예정, 입수, 점주 수정(박스)** 칸을 클릭해 고치면 추천 수량과 차트가 즉시 다시 계산됩니다.")
 
 table_rows = []
 for _, r in pred_summary_df.iterrows():
@@ -480,389 +467,402 @@ for _, r in pred_summary_df.iterrows():
 
 order_df = pd.DataFrame(table_rows)
 
-edited_df = st.data_editor(
-    order_df,
-    key=f"order_editor_{selected_store}",
-    use_container_width=True,
-    hide_index=True,
-    disabled=["품목", "예측(평균)", "하위10%", "상위90%", "추천(박스)", "최종"],
-    column_config={
-        "예측(평균)": st.column_config.NumberColumn(format="%.1f"),
-        "하위10%": st.column_config.NumberColumn(format="%.1f"),
-        "상위90%": st.column_config.NumberColumn(format="%.1f"),
-        "재고": st.column_config.NumberColumn(min_value=0, step=1, format="%d"),
-        "입고예정": st.column_config.NumberColumn(min_value=0, step=1, format="%d"),
-        "입수": st.column_config.NumberColumn(min_value=1, step=1, format="%d"),
-        "추천(박스)": st.column_config.NumberColumn(format="%d 박스"),
-        "점주 수정(박스)": st.column_config.NumberColumn(min_value=0, step=1, format="%d"),
-        "최종": st.column_config.NumberColumn(format="%d 박스"),
-    },
+with edit_box:
+    st.divider()
+    st.subheader("③ 재고·주문 직접 고치기")
+    st.caption("숫자가 실제와 다르면 칸을 눌러 고쳐 주세요. 위의 추천이 바로 다시 계산돼요.")
+    reason = st.selectbox("재고를 고치는 이유", ["실제와 달라서", "파손", "분실", "폐기", "미도착", "원인 미상"])
+    edited_df = st.data_editor(
+        order_df,
+        key=f"order_editor_{selected_store}",
+        use_container_width=True,
+        hide_index=True,
+        column_order=["품목", "재고", "입고예정", "입수", "추천(박스)", "점주 수정(박스)"],
+        disabled=["품목", "예측(평균)", "하위10%", "상위90%", "추천(박스)", "최종"],
+        column_config={
+            "재고": st.column_config.NumberColumn("지금 재고(추정)", min_value=0, step=1, format="%d"),
+            "입고예정": st.column_config.NumberColumn("들어올 예정 수량", min_value=0, step=1, format="%d"),
+            "입수": st.column_config.NumberColumn("한 박스 개수", min_value=1, step=1, format="%d"),
+            "추천(박스)": st.column_config.NumberColumn("추천(박스)", format="%d 박스"),
+            "점주 수정(박스)": st.column_config.NumberColumn("내가 정할 박스 수 (비우면 추천대로)", min_value=0, step=1, format="%d"),
+        },
+    )
+
+    changed = False
+    for _, row in edited_df.iterrows():
+        it_name = row["품목"]
+        prev = st.session_state["inventory_state"][f"{selected_store}::{it_name}"]
+        new_stock = int(max(0, 0 if pd.isna(row["재고"]) else row["재고"]))
+        new_inb = int(max(0, 0 if pd.isna(row["입고예정"]) else row["입고예정"]))
+        new_pack = int(max(1, 1 if pd.isna(row["입수"]) else row["입수"]))
+        new_edit = row["점주 수정(박스)"]
+        prev_edit = prev["점주수정"]
+        edit_changed = (pd.isna(new_edit) != pd.isna(prev_edit)) or (
+            not pd.isna(new_edit) and int(new_edit) != int(prev_edit)
+        )
+
+        if new_stock != prev["재고"]:
+            st.session_state["stock_logs"].insert(
+                0,
+                f"[{now_kst_naive().strftime('%H:%M')}] {selected_store} · {it_name}: 재고 {prev['재고']}개 → {new_stock}개 ({reason})",
+            )
+            prev["재고"] = new_stock
+            changed = True
+        if new_inb != prev["입고예정"] or new_pack != prev["입수"] or edit_changed:
+            prev["입고예정"] = new_inb
+            prev["입수"] = new_pack
+            prev["점주수정"] = np.nan if pd.isna(new_edit) else int(max(0, new_edit))
+            changed = True
+
+    if changed:
+        st.rerun()
+
+    with st.expander("재고 고친 기록"):
+        if st.session_state["stock_logs"]:
+            for log in st.session_state["stock_logs"]:
+                st.write(f"- {log}")
+        else:
+            st.caption("아직 고친 기록이 없어요.")
+
+
+SYSTEM_PROMPT = (
+    "당신은 무인 아이스크림·과자 매장 점주를 돕는 발주 도우미입니다. "
+    "통계나 기계학습 용어(분위수, 모델, 신뢰구간 등)는 쓰지 말고 누구나 이해할 쉬운 말로 3~5문장 이내로 답하세요. "
+    "숫자는 아래 [현재 상황]에 있는 것만 쓰고 새로 계산하거나 지어내지 마세요. "
+    "예측은 추정치라서 실제와 다를 수 있다는 점을 부드럽게 알려 주세요. 모르는 것은 모른다고 말하세요."
 )
 
-changed = False
-for _, row in edited_df.iterrows():
-    it_name = row["품목"]
-    prev = st.session_state["inventory_state"][f"{selected_store}::{it_name}"]
-    new_stock = int(max(0, 0 if pd.isna(row["재고"]) else row["재고"]))
-    new_inb = int(max(0, 0 if pd.isna(row["입고예정"]) else row["입고예정"]))
-    new_pack = int(max(1, 1 if pd.isna(row["입수"]) else row["입수"]))
-    new_edit = row["점주 수정(박스)"]
-    prev_edit = prev["점주수정"]
-    edit_changed = (pd.isna(new_edit) != pd.isna(prev_edit)) or (
-        not pd.isna(new_edit) and int(new_edit) != int(prev_edit)
+cover_days = (order_df["재고"] + order_df["입고예정"]) / np.maximum(0.1, order_df["예측(평균)"] / lead_days)
+risk_mask = cover_days < lead_days
+risk_items = order_df.loc[risk_mask, "품목"].tolist()
+
+
+def build_context() -> str:
+    rows = "\n".join(
+        f"- {r['품목']}: {lead_days}일 예상 판매 보통 {r['예측(평균)']:.0f}개 "
+        f"(적게 {r['하위10%']:.0f}~많이 {r['상위90%']:.0f}개), 지금 재고(추정) {int(r['재고'])}개, "
+        f"추천 {int(r['추천(박스)'])}박스, 최종 {int(r['최종'])}박스(한 박스 {int(r['입수'])}개)"
+        for _, r in order_df.iterrows()
+    )
+    return (
+        f"매장 {selected_store}({store_type}), 기준시각 {now_str}\n"
+        f"앞으로 {lead_days}일 날씨: 평균 {avg_t:.1f}°C(최고 {max_t:.1f}°C), 습도 {avg_h:.0f}%, "
+        f"무더위 정도 {di_label}, 비 {tot_r:.1f}mm\n"
+        f"발주 스타일: {mode_label}\n"
+        f"다음 입고 전에 떨어질 수 있는 품목: {risk_items if risk_items else '없음'}\n{rows}"
     )
 
-    if new_stock != prev["재고"]:
-        st.session_state["stock_logs"].insert(
-            0,
-            f"[{now_kst_naive().strftime('%H:%M')}] {selected_store} · {it_name}: 재고 {prev['재고']}개 → {new_stock}개 ({reason})",
-        )
-        prev["재고"] = new_stock
-        changed = True
-    if new_inb != prev["입고예정"] or new_pack != prev["입수"] or edit_changed:
-        prev["입고예정"] = new_inb
-        prev["입수"] = new_pack
-        prev["점주수정"] = np.nan if pd.isna(new_edit) else int(max(0, new_edit))
-        changed = True
 
-if changed:
-    st.rerun()
-
-col_btn, col_res = st.columns([1, 4])
-if col_btn.button("주문 확정", type="primary", use_container_width=True):
-    confirmed = [f"{r['품목']} {int(r['최종'])}박스" for _, r in order_df.iterrows() if r["최종"] > 0]
-    st.session_state["confirmed_msg"] = (
-        f"✅ 주문 확정 완료 ({selected_store} · {mode_label}): " + ", ".join(confirmed)
-        if confirmed
-        else "ℹ️ 이번 발주 주기에는 추가 주문할 품목이 없습니다."
-    )
-if "confirmed_msg" in st.session_state:
-    col_res.success(st.session_state["confirmed_msg"])
-
-st.divider()
-
-# ── 11. 시각화 대시보드 (실제 모델 예측 기반) ──
-st.subheader("📊 수요 예측 및 재고 리스크 분석")
-
-viz_item = st.selectbox("상세 분석 품목 선택", selected_items)
-viz_sub = full_future_df[full_future_df["_item"] == viz_item].copy()
-viz_row = order_df[order_df["품목"] == viz_item].iloc[0]
-
-col_left, col_right = st.columns(2)
-
-# 차트 A: 향후 7일 일별 예측 구간
-with col_left:
-    daily_g = viz_sub.groupby("date", as_index=False).agg(
-        mean=("pred_mean", "sum"),
-        hi_sq=("hi_sq", "sum"),
-        lo_sq=("lo_sq", "sum"),
-    )
-    daily_g["hi"] = daily_g["mean"] + np.sqrt(daily_g["hi_sq"])
-    daily_g["lo"] = np.maximum(0.0, daily_g["mean"] - np.sqrt(daily_g["lo_sq"]))
-    daily_g["날짜"] = daily_g["date"].astype(str)
-
-    fig_band = go.Figure()
-    if len(daily_g) >= lead_days:
-        fig_band.add_vrect(
-            x0=daily_g["날짜"].iloc[0],
-            x1=daily_g["날짜"].iloc[lead_days - 1],
-            fillcolor="rgba(255, 224, 102, 0.28)",
-            layer="below",
-            line_width=0,
-            annotation_text=f"입고 대기 {lead_days}일",
-            annotation_position="top left",
-        )
-    fig_band.add_trace(
-        go.Scatter(
-            x=list(daily_g["날짜"]) + list(daily_g["날짜"][::-1]),
-            y=list(daily_g["hi"]) + list(daily_g["lo"][::-1]),
-            fill="toself",
-            fillcolor="rgba(47, 111, 237, 0.20)",
-            line=dict(color="rgba(255,255,255,0)"),
-            name="하위10%~상위90%",
-        )
-    )
-    fig_band.add_trace(
-        go.Scatter(
-            x=daily_g["날짜"],
-            y=daily_g["mean"],
-            mode="lines+markers",
-            line=dict(color="#2f6fed", width=3),
-            name="평균 예상 판매량",
-        )
-    )
-    fig_band.update_layout(
-        title=f"[{viz_item}] 향후 7일 예측 구간 (실제 모델 예측)",
-        yaxis_title="예상 판매량(개/일)",
-        height=330,
-        margin=dict(t=45, b=20, l=20, r=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig_band, use_container_width=True)
-
-# 차트 B: 입고 전 재고 소진 시뮬레이션
-with col_right:
-    dep_sub = viz_sub.iloc[:lead_hours].copy()
-    cur_stock = float(viz_row["재고"])
-    cur_inb = float(viz_row["입고예정"])
-    dep_sub["잔여(평균)"] = cur_stock - dep_sub["pred_mean"].cumsum()
-    dep_sub["잔여(상위90%)"] = cur_stock - dep_sub["pred_high"].cumsum()
-
-    fig_dep = go.Figure()
-    fig_dep.add_hline(y=0, line_color="#d33", line_width=1.5, annotation_text="품절선 (0개)")
-    fig_dep.add_trace(
-        go.Scatter(
-            x=dep_sub["datetime"],
-            y=dep_sub["잔여(평균)"],
-            mode="lines",
-            line=dict(color="#2f6fed", width=2.5),
-            name="평균 수요 기준",
-        )
-    )
-    fig_dep.add_trace(
-        go.Scatter(
-            x=dep_sub["datetime"],
-            y=dep_sub["잔여(상위90%)"],
-            mode="lines",
-            line=dict(color="#d33", width=2, dash="dash"),
-            name="상위 90% 수요 기준",
-        )
-    )
-    fig_dep.update_layout(
-        title=f"[{viz_item}] 입고 전({lead_days}일) 재고 소진 시뮬레이션 (입고예정 +{int(cur_inb)}개)",
-        yaxis_title="남은 재고(개)",
-        height=330,
-        margin=dict(t=45, b=20, l=20, r=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig_dep, use_container_width=True)
-
-# 차트 C & D: 월별·기온별 모델 반응 곡선
-st.markdown(f"#### 🌡️ [{viz_item}] 월별·기온별 판매 민감도 (학습된 CatBoost 모델 반응)")
-c_mo, c_tp = st.columns(2)
-
-base_one = full_future_df[full_future_df["_item"] == viz_item].iloc[[0]].copy()
-if COL["hour"]:
-    base_one[COL["hour"]] = 18
-
-with c_mo:
-    tm_list = [-1, 1, 6, 13, 18, 22, 26, 26, 21, 14, 7, 1]
-    mo_df = pd.concat([base_one] * 12, ignore_index=True)
-    if COL["month"]:
-        mo_df[COL["month"]] = list(range(1, 13))
-    if COL["temp"]:
-        mo_df[COL["temp"]] = tm_list
-    if COL["di"]:
-        mo_df[COL["di"]] = [calc_discomfort_index(t, 60.0) for t in tm_list]
-    mo_aligned = align_catboost_df(mo_df, features, cat_cols, categories, default_row)
-    mo_preds = np.maximum(0.0, mean_model.predict(mo_aligned, prediction_type="Exponent"))
-    mo_idx = mo_preds / max(1e-6, mo_preds.mean()) * 100
-
-    fig_mo = go.Figure()
-    fig_mo.add_trace(
-        go.Bar(x=[f"{m}월" for m in range(1, 13)], y=mo_idx, name="판매 지수(평균=100)", marker_color="#2f6fed", opacity=0.75)
-    )
-    fig_mo.add_trace(
-        go.Scatter(x=[f"{m}월" for m in range(1, 13)], y=tm_list, name="월평균기온(°C)", yaxis="y2", line=dict(color="#1a7f4b", width=2.5))
-    )
-    fig_mo.update_layout(
-        title="월별 판매 지수 및 기온",
-        yaxis=dict(title="판매 지수"),
-        yaxis2=dict(title="기온(°C)", overlaying="y", side="right"),
-        height=300,
-        margin=dict(t=45, b=20, l=20, r=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig_mo, use_container_width=True)
-
-with c_tp:
-    temps = list(range(-10, 39, 2))
-    tp_df = pd.concat([base_one] * len(temps), ignore_index=True)
-    if COL["temp"]:
-        tp_df[COL["temp"]] = temps
-    if COL["di"]:
-        tp_df[COL["di"]] = [calc_discomfort_index(t, 60.0) for t in temps]
-    tp_aligned = align_catboost_df(tp_df, features, cat_cols, categories, default_row)
-    tp_preds = np.maximum(0.0, mean_model.predict(tp_aligned, prediction_type="Exponent"))
-    base_20 = tp_preds[temps.index(20)] if 20 in temps else tp_preds.mean()
-    tp_idx = tp_preds / max(1e-6, base_20) * 100
-
-    fig_tp = go.Figure()
-    fig_tp.add_hline(y=100, line_dash="dot", line_color="gray", annotation_text="20°C 기준(100)")
-    fig_tp.add_trace(go.Scatter(x=temps, y=tp_idx, mode="lines+markers", line=dict(color="#2f6fed", width=2.5), name="기온별 지수"))
-    fig_tp.update_layout(
-        title="기온별 판매 민감도 곡선 (20°C = 100)",
-        xaxis_title="기온 (°C)",
-        yaxis_title="상대 판매 지수",
-        height=300,
-        margin=dict(t=45, b=20, l=20, r=20),
-    )
-    st.plotly_chart(fig_tp, use_container_width=True)
-
-# 차트 E & F: 재고 가능일수 + 요일×시간 히트맵
-c_dys, c_hm = st.columns(2)
-
-with c_dys:
-    dys_data = []
-    for _, r in order_df.iterrows():
-        daily_avg = max(0.1, float(r["예측(평균)"]) / lead_days)
-        cov_days = (r["재고"] + r["입고예정"]) / daily_avg
-        dys_data.append({
-            "품목": r["품목"],
-            "가능일수": round(cov_days, 1),
-            "상태": "품절 위험(<입고일)" if cov_days < lead_days else "양호",
-        })
-    dys_df = pd.DataFrame(dys_data)
-    fig_dys = px.bar(
-        dys_df,
-        x="가능일수",
-        y="품목",
-        orientation="h",
-        color="상태",
-        text="가능일수",
-        color_discrete_map={"품절 위험(<입고일)": "#d33", "양호": "#2f6fed"},
-        title=f"품목별 재고 가능일수 ({lead_days}일 미만 빨강 = 입고 전 품절 위험)",
-    )
-    fig_dys.add_vline(x=lead_days, line_dash="dash", line_color="#d33")
-    fig_dys.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
-    st.plotly_chart(fig_dys, use_container_width=True)
-
-with c_hm:
-    hm_sub = viz_sub.copy()
-    hm_sub["요일명"] = hm_sub["요일_idx"].map(lambda i: WEEKDAY_KR[i])
-    hm_piv = (
-        hm_sub.pivot_table(index="요일명", columns="시", values="pred_mean", aggfunc="mean")
-        .reindex(index=WEEKDAY_KR, columns=list(range(24)))
-    )
-    fig_hm = px.imshow(
-        hm_piv,
-        aspect="auto",
-        color_continuous_scale="Blues",
-        labels=dict(x="시간(시)", y="요일", color="시간당 예측"),
-        title=f"[{viz_item}] 향후 7일 요일 × 시간대별 예측 판매량",
-    )
-    fig_hm.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
-    st.plotly_chart(fig_hm, use_container_width=True)
-
-# 차트 G & H: 발주 기준별 위험 비교 & 변수 중요도 Top 10
-c_rk, c_imp = st.columns(2)
-
-with c_rk:
-    risk_rows = []
-    for label, col_k in [("품절 방지(90%)", "상위90%"), ("기본(평균)", "예측(평균)"), ("폐기 최소(10%)", "하위10%")]:
-        left_tot, short_tot = 0.0, 0.0
-        for _, r in order_df.iterrows():
-            need_q = max(0.0, math.ceil(r[col_k] - r["재고"] - r["입고예정"]))
-            ord_u = math.ceil(need_q / max(1, r["입수"])) * max(1, r["입수"])
-            avail = r["재고"] + r["입고예정"] + ord_u
-            left_tot += max(0.0, avail - r["예측(평균)"])
-            short_tot += max(0.0, r["상위90%"] - avail)
-        risk_rows.append({"기준": label, "구분": "평균 수요 시 남는 재고", "수량(개)": round(left_tot, 1)})
-        risk_rows.append({"기준": label, "구분": "상위90% 수요 시 부족분", "수량(개)": round(short_tot, 1)})
-    fig_rk = px.bar(
-        pd.DataFrame(risk_rows),
-        x="수량(개)",
-        y="기준",
-        color="구분",
-        barmode="group",
-        orientation="h",
-        color_discrete_map={"평균 수요 시 남는 재고": "#2f6fed", "상위90% 수요 시 부족분": "#d33"},
-        title="발주 기준별 위험 비교 (전 품목 합계)",
-    )
-    fig_rk.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
-    st.plotly_chart(fig_rk, use_container_width=True)
-
-with c_imp:
-    imps = mean_model.get_feature_importance()
-    imp_df = (
-        pd.DataFrame({"변수": [rename.get(f, f) for f in features], "중요도": imps})
-        .sort_values("중요도", ascending=True)
-        .tail(10)
-    )
-    fig_imp = px.bar(
-        imp_df,
-        x="중요도",
-        y="변수",
-        orientation="h",
-        title="학습 모델 변수중요도 상위 10개 (poisson_mean.cbm)",
-    )
-    fig_imp.update_traces(marker_color="#2f6fed")
-    fig_imp.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
-    st.plotly_chart(fig_imp, use_container_width=True)
-
-# ── 12. 추천 근거 & Groq AI 브리핑 ──
-st.subheader("3. 추천 근거 및 Groq AI 종합 브리핑")
-
-with st.expander("📋 품목별 추천 수량 산출 내역 보기"):
-    for _, r in order_df.iterrows():
-        target = r[mode_col]
-        need_q = max(0.0, math.ceil(target - r["재고"] - r["입고예정"]))
-        line = (
-            f"**{r['품목']}**: {lead_days}일 예상({mode_label}) {target:.1f}개 − "
-            f"재고 {int(r['재고'])}개 − 입고예정 {int(r['입고예정'])}개 = "
-            f"부족 {need_q:.0f}개 → {int(r['입수'])}개입 **{int(r['추천(박스)'])}박스** 추천"
-        )
-        if not pd.isna(r["점주 수정(박스)"]) and int(r["점주 수정(박스)"]) != int(r["추천(박스)"]):
-            line += f" *(점주 수정: {int(r['점주 수정(박스)'])}박스)*"
-        st.markdown(f"- {line}")
-
-if st.button("🤖 Groq AI 종합 발주 브리핑 생성", use_container_width=True):
+def run_chat(question: str):
     api_key = get_secret("GROQ_API_KEY")
+    history = st.session_state["chat"][-8:]
+    st.session_state["chat"].append({"role": "user", "content": question})
     if not api_key:
-        st.error("Streamlit Secrets에 GROQ_API_KEY를 등록하세요.")
+        answer = "Streamlit Secrets에 GROQ_API_KEY를 등록하면 AI 도우미를 쓸 수 있어요."
     else:
         try:
             from groq import Groq
 
-            client = Groq(api_key=api_key)
-            risk_items = dys_df[dys_df["가능일수"] < lead_days]["품목"].tolist()
-            order_summary_txt = "\n".join(
-                f"- {r['품목']}({item_meta_map[r['품목']]['category']}): "
-                f"평균 {r['예측(평균)']:.1f}개(범위 {r['하위10%']:.1f}~{r['상위90%']:.1f}), "
-                f"현재재고 {int(r['재고'])}개, 최종발주 {int(r['최종'])}박스"
-                for _, r in order_df.iterrows()
+            msgs = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n[현재 상황]\n" + build_context()}]
+            msgs += history + [{"role": "user", "content": question}]
+            res = Groq(api_key=api_key).chat.completions.create(
+                model="openai/gpt-oss-120b", messages=msgs, temperature=0.3
             )
-            prompt = f"""무인 매장 점주에게 발주 판단을 쉽게 돕는 브리핑을 한국어로 작성하세요.
-계산식을 다시 나열하지 말고, 점주가 직관적으로 이해할 수 있게 핵심 위험과 실행 포인트를 설명하세요.
-예측값은 추정치일 뿐 실제 판매를 보장하지 않음을 자연스럽게 반영하세요.
-
-[매장 및 향후 {lead_days}일 기상 자동 조회 정보]
-- 매장: {selected_store} ({store_type}, 위치: {location_source})
-- 기준시각: {now_str}
-- 기온: 평균 {avg_t:.1f}°C (최고 {max_t:.1f}°C), 습도 {avg_h:.0f}%, 불쾌지수 {avg_di:.1f}({di_label}), 누적 강수 {tot_r:.1f}mm
-- 적용 발주 기준: {mode_label}
-- 입고 전 품절 위험 품목: {risk_items if risk_items else '없음'}
-
-[품목별 발주 현황]
-{order_summary_txt}
-
-아래 형식으로 5줄 이내로 간결하게 작성해 주세요.
-- **한 줄 요약:** 전체 발주 방향과 가장 시급한 품목을 쉬운 말로 요약
-- **날씨·수요 포인트:** 향후 {lead_days}일 기온·강수·불쾌지수가 판매에 미칠 영향
-- **현장 확인할 점:** 품절 위험 품목 실사나 피크 시간대 등 점주가 챙길 포인트 1~2가지
-"""
-            response = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "당신은 무인 매장 점주를 돕는 발주 해석 도우미입니다. 계산식을 반복하지 말고 주어진 수치의 의미와 현장 리스크를 쉬운 말로 풀어주세요.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-            )
-            st.success(response.choices[0].message.content)
+            answer = res.choices[0].message.content
         except Exception as e:
-            st.error(f"Groq 호출 오류: {e}")
+            answer = f"AI 도우미 연결에 문제가 생겼어요: {e}"
+    st.session_state["chat"].append({"role": "assistant", "content": answer})
 
-# ── 13. 재고 조정 이력 ──
-st.subheader("4. 재고 조정 이력")
-if st.session_state["stock_logs"]:
-    for log in st.session_state["stock_logs"]:
-        st.write(f"- {log}")
-else:
-    st.caption("아직 조정 이력이 없습니다. 위 표에서 재고를 수정하면 자동으로 기록됩니다.")
 
-st.divider()
-st.caption("시연용 프로토타입입니다. 예측값은 실제 판매량을 보장하지 않으며, 발주 전 재고와 운영 상황을 확인하세요.")
+with ai_box:
+    st.subheader("🤖 AI 도우미")
+    if "chat" not in st.session_state:
+        st.session_state["chat"] = []
+    for m in st.session_state["chat"]:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+    q_btn = st.button("오늘 뭘 주문하면 좋을지 알려 주세요", use_container_width=True)
+    with st.form("ask_form", clear_on_submit=True):
+        q_text = st.text_input("궁금한 점을 적어 주세요", placeholder="예: 비 오는 날은 어떤 게 덜 팔려요?")
+        sent = st.form_submit_button("물어보기")
+    question = "오늘 발주를 어떻게 하면 좋을지 쉽게 알려 주세요." if q_btn else (q_text.strip() if sent else "")
+    if question:
+        with st.spinner("생각하는 중이에요..."):
+            run_chat(question)
+        st.rerun()
+
+# ── 이번 발주 요약 ──
+with order_box:
+    if risk_items:
+        st.warning(f"다음 입고 전에 떨어질 수 있는 품목이 {len(risk_items)}개 있어요: " + ", ".join(risk_items))
+    else:
+        st.success("지금 재고로 다음 입고까지 버틸 수 있어요.")
+    show_df = pd.DataFrame({
+        "품목": order_df["품목"],
+        "상태": np.where(risk_mask, "🔴 서둘러 주문", "🟢 여유 있음"),
+        "지금 재고(추정)": order_df["재고"],
+        f"앞으로 {lead_days}일 예상 판매": [f"{a:.0f} ~ {b:.0f}개" for a, b in zip(order_df["하위10%"], order_df["상위90%"])],
+        "추천 주문": [f"{int(x)}박스" for x in order_df["추천(박스)"]],
+        "최종 주문": [f"{int(x)}박스" for x in order_df["최종"]],
+    })
+    st.dataframe(show_df, hide_index=True, use_container_width=True)
+    if st.button("✅ 이 내용으로 주문 확정", type="primary"):
+        confirmed = [f"{r['품목']} {int(r['최종'])}박스" for _, r in order_df.iterrows() if r["최종"] > 0]
+        st.session_state["confirmed_msg"] = (
+            "주문 확정 완료: " + ", ".join(confirmed) if confirmed else "이번에는 추가로 주문할 품목이 없어요."
+        )
+    if "confirmed_msg" in st.session_state:
+        st.success(st.session_state["confirmed_msg"])
+
+
+with viz_box:
+    st.subheader("② 그림으로 보기")
+    viz_item = st.selectbox("품목 고르기", selected_items)
+    viz_sub = full_future_df[full_future_df["_item"] == viz_item].copy()
+    viz_row = order_df[order_df["품목"] == viz_item].iloc[0]
+    tab_a, tab_b, tab_c = st.tabs(["📈 앞으로 판매 예상", "📦 재고로 버티는 날", "🌡️ 날씨·시간대"])
+
+    base_one = full_future_df[full_future_df["_item"] == viz_item].iloc[[0]].copy()
+    if COL["hour"]:
+        base_one[COL["hour"]] = 18
+    with tab_a:
+        col_left, col_right = st.columns(2)
+
+        # 차트 A: 향후 7일 일별 예측 구간
+        with col_left:
+            daily_g = viz_sub.groupby("date", as_index=False).agg(
+                mean=("pred_mean", "sum"),
+                hi_sq=("hi_sq", "sum"),
+                lo_sq=("lo_sq", "sum"),
+            )
+            daily_g["hi"] = daily_g["mean"] + np.sqrt(daily_g["hi_sq"])
+            daily_g["lo"] = np.maximum(0.0, daily_g["mean"] - np.sqrt(daily_g["lo_sq"]))
+            daily_g["날짜"] = daily_g["date"].astype(str)
+
+            fig_band = go.Figure()
+            if len(daily_g) >= lead_days:
+                fig_band.add_vrect(
+                    x0=daily_g["날짜"].iloc[0],
+                    x1=daily_g["날짜"].iloc[lead_days - 1],
+                    fillcolor="rgba(255, 224, 102, 0.28)",
+                    layer="below",
+                    line_width=0,
+                    annotation_text=f"입고 대기 {lead_days}일",
+                    annotation_position="top left",
+                )
+            fig_band.add_trace(
+                go.Scatter(
+                    x=list(daily_g["날짜"]) + list(daily_g["날짜"][::-1]),
+                    y=list(daily_g["hi"]) + list(daily_g["lo"][::-1]),
+                    fill="toself",
+                    fillcolor="rgba(47, 111, 237, 0.20)",
+                    line=dict(color="rgba(255,255,255,0)"),
+                    name="적게~많이 팔릴 범위",
+                )
+            )
+            fig_band.add_trace(
+                go.Scatter(
+                    x=daily_g["날짜"],
+                    y=daily_g["mean"],
+                    mode="lines+markers",
+                    line=dict(color="#2f6fed", width=3),
+                    name="보통 예상",
+                )
+            )
+            fig_band.update_layout(
+                title=f"[{viz_item}] 앞으로 7일, 하루에 몇 개 팔릴까요?",
+                yaxis_title="하루 판매 예상(개)",
+                height=330,
+                margin=dict(t=45, b=20, l=20, r=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_band, use_container_width=True)
+
+        # 차트 B: 입고 전 재고 소진 시뮬레이션
+        with col_right:
+            dep_sub = viz_sub.iloc[:lead_hours].copy()
+            cur_stock = float(viz_row["재고"])
+            cur_inb = float(viz_row["입고예정"])
+            dep_sub["잔여(평균)"] = cur_stock - dep_sub["pred_mean"].cumsum()
+            dep_sub["잔여(상위90%)"] = cur_stock - dep_sub["pred_high"].cumsum()
+
+            fig_dep = go.Figure()
+            fig_dep.add_hline(y=0, line_color="#d33", line_width=1.5, annotation_text="0개 = 품절")
+            fig_dep.add_trace(
+                go.Scatter(
+                    x=dep_sub["datetime"],
+                    y=dep_sub["잔여(평균)"],
+                    mode="lines",
+                    line=dict(color="#2f6fed", width=2.5),
+                    name="보통 팔릴 때",
+                )
+            )
+            fig_dep.add_trace(
+                go.Scatter(
+                    x=dep_sub["datetime"],
+                    y=dep_sub["잔여(상위90%)"],
+                    mode="lines",
+                    line=dict(color="#d33", width=2, dash="dash"),
+                    name="많이 팔릴 때",
+                )
+            )
+            fig_dep.update_layout(
+                title=f"[{viz_item}] 다음 입고 전까지 재고가 얼마나 남을까요?",
+                yaxis_title="남은 재고(개)",
+                height=330,
+                margin=dict(t=45, b=20, l=20, r=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_dep, use_container_width=True)
+    with tab_b:
+        c_dys = st.container()
+        with c_dys:
+            dys_data = []
+            for _, r in order_df.iterrows():
+                daily_avg = max(0.1, float(r["예측(평균)"]) / lead_days)
+                cov_days = (r["재고"] + r["입고예정"]) / daily_avg
+                dys_data.append({
+                    "품목": r["품목"],
+                    "가능일수": round(cov_days, 1),
+                    "상태": "입고 전에 떨어질 수 있음" if cov_days < lead_days else "여유 있음",
+                })
+            dys_df = pd.DataFrame(dys_data)
+            fig_dys = px.bar(
+                dys_df,
+                x="가능일수",
+                y="품목",
+                orientation="h",
+                color="상태",
+                text="가능일수",
+                color_discrete_map={"입고 전에 떨어질 수 있음": "#d33", "여유 있음": "#2f6fed"},
+                title="지금 재고로 며칠 버틸 수 있을까요? (빨강 = 다음 입고 전에 떨어질 수 있어요)",
+            )
+            fig_dys.add_vline(x=lead_days, line_dash="dash", line_color="#d33")
+            fig_dys.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
+            st.plotly_chart(fig_dys, use_container_width=True)
+    with tab_c:
+        c_tp, c_hm = st.columns(2)
+        with c_tp:
+            temps = list(range(-10, 39, 2))
+            tp_df = pd.concat([base_one] * len(temps), ignore_index=True)
+            if COL["temp"]:
+                tp_df[COL["temp"]] = temps
+            if COL["di"]:
+                tp_df[COL["di"]] = [calc_discomfort_index(t, 60.0) for t in temps]
+            tp_aligned = align_catboost_df(tp_df, features, cat_cols, categories, default_row)
+            tp_preds = np.maximum(0.0, mean_model.predict(tp_aligned, prediction_type="Exponent"))
+            base_20 = tp_preds[temps.index(20)] if 20 in temps else tp_preds.mean()
+            tp_idx = tp_preds / max(1e-6, base_20) * 100
+
+            fig_tp = go.Figure()
+            fig_tp.add_hline(y=100, line_dash="dot", line_color="gray", annotation_text="20°C 기준(100)")
+            fig_tp.add_trace(go.Scatter(x=temps, y=tp_idx, mode="lines+markers", line=dict(color="#2f6fed", width=2.5), name="기온별 지수"))
+            fig_tp.update_layout(
+                title="기온에 따라 얼마나 팔릴까요? (20°C일 때 = 100)",
+                xaxis_title="기온 (°C)",
+                yaxis_title="판매 정도",
+                height=300,
+                margin=dict(t=45, b=20, l=20, r=20),
+            )
+            st.plotly_chart(fig_tp, use_container_width=True)
+        with c_hm:
+            hm_sub = viz_sub.copy()
+            hm_sub["요일명"] = hm_sub["요일_idx"].map(lambda i: WEEKDAY_KR[i])
+            hm_piv = (
+                hm_sub.pivot_table(index="요일명", columns="시", values="pred_mean", aggfunc="mean")
+                .reindex(index=WEEKDAY_KR, columns=list(range(24)))
+            )
+            fig_hm = px.imshow(
+                hm_piv,
+                aspect="auto",
+                color_continuous_scale="Blues",
+                labels=dict(x="시간(시)", y="요일", color="판매 정도"),
+                title=f"[{viz_item}] 언제 많이 팔릴까요? (진할수록 많이)",
+            )
+            fig_hm.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
+            st.plotly_chart(fig_hm, use_container_width=True)
+
+with detail_box:
+    with st.expander("🔬 분석가용 상세 (모델·기상 데이터)"):
+        preview_cols = [
+            "datetime", "월", "일", "시", "기온", "강수량", "습도", "풍속",
+            "불쾌지수", "주말", "공휴일", "연휴", "기상출처",
+        ]
+        st.caption("모델에 자동으로 들어가는 미래 24시간 기상·달력 데이터")
+        st.dataframe(weather_df[preview_cols].head(24), use_container_width=True)
+        c_mo = st.container()
+
+        with c_mo:
+            tm_list = [-1, 1, 6, 13, 18, 22, 26, 26, 21, 14, 7, 1]
+            mo_df = pd.concat([base_one] * 12, ignore_index=True)
+            if COL["month"]:
+                mo_df[COL["month"]] = list(range(1, 13))
+            if COL["temp"]:
+                mo_df[COL["temp"]] = tm_list
+            if COL["di"]:
+                mo_df[COL["di"]] = [calc_discomfort_index(t, 60.0) for t in tm_list]
+            mo_aligned = align_catboost_df(mo_df, features, cat_cols, categories, default_row)
+            mo_preds = np.maximum(0.0, mean_model.predict(mo_aligned, prediction_type="Exponent"))
+            mo_idx = mo_preds / max(1e-6, mo_preds.mean()) * 100
+
+            fig_mo = go.Figure()
+            fig_mo.add_trace(
+                go.Bar(x=[f"{m}월" for m in range(1, 13)], y=mo_idx, name="판매 지수(평균=100)", marker_color="#2f6fed", opacity=0.75)
+            )
+            fig_mo.add_trace(
+                go.Scatter(x=[f"{m}월" for m in range(1, 13)], y=tm_list, name="월평균기온(°C)", yaxis="y2", line=dict(color="#1a7f4b", width=2.5))
+            )
+            fig_mo.update_layout(
+                title="월별 판매 정도와 기온",
+                yaxis=dict(title="판매 지수"),
+                yaxis2=dict(title="기온(°C)", overlaying="y", side="right"),
+                height=300,
+                margin=dict(t=45, b=20, l=20, r=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_mo, use_container_width=True)
+        c_rk = st.container()
+        with c_rk:
+            risk_rows = []
+            for label, col_k in [("품절 방지(90%)", "상위90%"), ("기본(평균)", "예측(평균)"), ("폐기 최소(10%)", "하위10%")]:
+                left_tot, short_tot = 0.0, 0.0
+                for _, r in order_df.iterrows():
+                    need_q = max(0.0, math.ceil(r[col_k] - r["재고"] - r["입고예정"]))
+                    ord_u = math.ceil(need_q / max(1, r["입수"])) * max(1, r["입수"])
+                    avail = r["재고"] + r["입고예정"] + ord_u
+                    left_tot += max(0.0, avail - r["예측(평균)"])
+                    short_tot += max(0.0, r["상위90%"] - avail)
+                risk_rows.append({"기준": label, "구분": "평균 수요 시 남는 재고", "수량(개)": round(left_tot, 1)})
+                risk_rows.append({"기준": label, "구분": "상위90% 수요 시 부족분", "수량(개)": round(short_tot, 1)})
+            fig_rk = px.bar(
+                pd.DataFrame(risk_rows),
+                x="수량(개)",
+                y="기준",
+                color="구분",
+                barmode="group",
+                orientation="h",
+                color_discrete_map={"평균 수요 시 남는 재고": "#2f6fed", "상위90% 수요 시 부족분": "#d33"},
+                title="발주 기준별 위험 비교 (전 품목 합계)",
+            )
+            fig_rk.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
+            st.plotly_chart(fig_rk, use_container_width=True)
+        c_imp = st.container()
+        with c_imp:
+            imps = mean_model.get_feature_importance()
+            imp_df = (
+                pd.DataFrame({"변수": [rename.get(f, f) for f in features], "중요도": imps})
+                .sort_values("중요도", ascending=True)
+                .tail(10)
+            )
+            fig_imp = px.bar(
+                imp_df,
+                x="중요도",
+                y="변수",
+                orientation="h",
+                title="모델이 중요하게 본 변수 상위 10개",
+            )
+            fig_imp.update_traces(marker_color="#2f6fed")
+            fig_imp.update_layout(height=320, margin=dict(t=45, b=20, l=20, r=20))
+            st.plotly_chart(fig_imp, use_container_width=True)
+
+st.caption("시연용 프로토타입입니다. 예상은 실제 판매를 보장하지 않으니, 주문 전에 실제 재고와 매장 상황을 확인하세요.")
