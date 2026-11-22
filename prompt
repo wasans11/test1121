@@ -145,7 +145,7 @@ response = client.chat.completions.create(
     ],
     temperature=0.3,
 )
-st.write(response.choices[0].message.content)
+            st.write(response.choices[0].message.content)
         except KeyError:
             st.error("Streamlit Secrets에 GROQ_API_KEY를 등록하세요.")
         except Exception as e:
