@@ -3,3 +3,4 @@ catboost
 pandas
 numpy
 groq
+pip install plotly holidays requests
