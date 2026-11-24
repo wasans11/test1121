@@ -464,6 +464,7 @@ for _, r in pred_summary_df.iterrows():
         "입고예정": inb,
         "입수": pack,
         "추천(박스)": rec_boxes,
+        "필요(개)": int(needed),
         "점주 수정(박스)": np.nan if pd.isna(edit_val) else float(edit_val),
         "최종": final_boxes,
     })
@@ -534,7 +535,11 @@ SYSTEM_PROMPT = (
     "숫자는 아래 [현재 상황]에 있는 것만 쓰고 새로 계산하거나 지어내지 마세요. "
     "예측은 추정치라서 실제와 다를 수 있다는 점을 부드럽게 알려 주세요. 모르는 것은 모른다고 말하세요. "
     "단위를 정확히 구분하세요: 주문은 '박스', 재고와 판매 예상은 '개'입니다. 개수를 박스로 바꿔 말하지 마세요. "
-    "이전 대화의 숫자는 옛 조건 기준일 수 있으니 반드시 [현재 상황]의 숫자만 사용하세요."
+    "이전 대화의 숫자는 옛 조건 기준일 수 있으니 반드시 [현재 상황]의 숫자만 사용하세요. "
+    "주문을 추천하는 질문에는 이 형식으로 답하세요: 첫 줄에 오늘 주문할 총 박스 수를 한 문장으로 말하고, "
+    "이어서 주문할 품목마다 줄을 바꿔 '- 품목 N박스 (재고 A개, 예상 판매 B~C개)' 형태로 쓰고, "
+    "주문하지 않아도 되는 품목은 한 줄로 묶어 말하고, 마지막에 현재 발주 스타일을 한 문장으로 알려 주세요. "
+    "숫자와 단위는 붙여 쓰세요(예: 2박스, 12개)."
 )
 
 cover_days = (order_df["재고"] + order_df["입고예정"]) / np.maximum(0.1, order_df["예측(평균)"] / lead_days)
@@ -563,8 +568,12 @@ def build_context() -> str:
 
 def run_chat(question: str):
     api_key = get_secret("GROQ_API_KEY")
-    history = st.session_state["chat"][-8:]
-    st.session_state["chat"].append({"role": "user", "content": question})
+    cur_ctx = build_context()
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in st.session_state["chat"] if m.get("ctx") == cur_ctx
+    ][-8:]
+    st.session_state["chat"].append({"role": "user", "content": question, "ctx": cur_ctx})
     if not api_key:
         answer = "Streamlit Secrets에 GROQ_API_KEY를 등록하면 AI 도우미를 쓸 수 있어요."
     else:
@@ -579,19 +588,24 @@ def run_chat(question: str):
             answer = res.choices[0].message.content
         except Exception as e:
             answer = f"AI 도우미 연결에 문제가 생겼어요: {e}"
-    st.session_state["chat"].append({"role": "assistant", "content": answer})
-    st.session_state["chat_ctx"] = build_context()
+    st.session_state["chat"].append({"role": "assistant", "content": answer, "ctx": cur_ctx})
 
 
 with ai_box:
     st.subheader("🤖 AI 도우미")
     if "chat" not in st.session_state:
         st.session_state["chat"] = []
+    cur_ctx = build_context()
+    old_msgs = [m for m in st.session_state["chat"] if m.get("ctx") != cur_ctx]
+    if old_msgs:
+        with st.expander("이전 기준 대화 (숫자가 지금과 다를 수 있어요)"):
+            for m in old_msgs:
+                with st.chat_message(m["role"]):
+                    st.markdown(m["content"])
     for m in st.session_state["chat"]:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-    if st.session_state["chat"] and st.session_state.get("chat_ctx") != build_context():
-        st.info("발주 스타일이나 재고가 바뀌어서 위 답변은 이전 기준이에요. 다시 물어보시면 새 기준으로 알려 드려요.")
+        if m.get("ctx") == cur_ctx:
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
     q_btn = st.button("오늘 뭘 주문하면 좋을지 알려 주세요", use_container_width=True)
     with st.form("ask_form", clear_on_submit=True):
         q_text = st.text_input("궁금한 점을 적어 주세요", placeholder="예: 비 오는 날은 어떤 게 덜 팔려요?")
@@ -613,11 +627,22 @@ with order_box:
         "상태": np.where(risk_mask, "🔴 서둘러 주문", "🟢 여유 있음"),
         "지금 재고(추정)": order_df["재고"],
         f"앞으로 {lead_days}일 예상 판매": [f"{a:.0f} ~ {b:.0f}개" for a, b in zip(order_df["하위10%"], order_df["상위90%"])],
+        "부족한 개수": [f"{int(x)}개" for x in order_df["필요(개)"]],
         "한 박스": [f"{int(x)}개입" for x in order_df["입수"]],
         "추천 주문": [f"{int(x)}박스" for x in order_df["추천(박스)"]],
         "최종 주문": [f"{int(x)}박스" for x in order_df["최종"]],
     })
     st.dataframe(show_df, hide_index=True, use_container_width=True)
+    with st.expander("발주 스타일별로 비교해 보기"):
+        cmp_rows = []
+        for _, r in order_df.iterrows():
+            row = {"품목": r["품목"]}
+            for label, col in [("알뜰하게", "하위10%"), ("보통", "예측(평균)"), ("넉넉하게", "상위90%")]:
+                need_i = max(0.0, math.ceil(float(r[col]) - r["재고"] - r["입고예정"]))
+                row[label] = f"{int(math.ceil(need_i / max(1, r['입수'])))}박스"
+            cmp_rows.append(row)
+        st.dataframe(pd.DataFrame(cmp_rows), hide_index=True, use_container_width=True)
+        st.caption("박스 단위로 올림하기 때문에, 스타일 차이가 한 박스보다 작으면 같은 박스 수로 보일 수 있어요.")
     if st.button("✅ 이 내용으로 주문 확정", type="primary"):
         confirmed = [f"{r['품목']} {int(r['최종'])}박스" for _, r in order_df.iterrows() if r["최종"] > 0]
         st.session_state["confirmed_msg"] = (
