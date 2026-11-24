@@ -1,6 +1,7 @@
 # app.py
 import json
 import math
+import zlib
 
 import numpy as np
 import pandas as pd
@@ -415,7 +416,9 @@ for _, r in pred_summary_df.iterrows():
     it_name = r["품목"]
     state_key = f"{selected_store}::{it_name}"
     if state_key not in st.session_state["inventory_state"]:
-        init_stock = max(2, int(round(r["예측(평균)"] * 0.6)))
+        # 품목마다 고정된 비율(0.5~2.0배)로 시작 재고를 만들어 데모가 한 가지 상태로만 보이지 않게 한다
+        stock_factor = 0.5 + (zlib.crc32(state_key.encode("utf-8")) % 100) / 100 * 1.5
+        init_stock = max(2, int(round(r["예측(평균)"] * stock_factor)))
         pack_def = DEFAULT_PACK.get(r["상품군"], 12)
         st.session_state["inventory_state"][state_key] = {
             "재고": init_stock,
@@ -529,7 +532,9 @@ SYSTEM_PROMPT = (
     "당신은 무인 아이스크림·과자 매장 점주를 돕는 발주 도우미입니다. "
     "통계나 기계학습 용어(분위수, 모델, 신뢰구간 등)는 쓰지 말고 누구나 이해할 쉬운 말로 3~5문장 이내로 답하세요. "
     "숫자는 아래 [현재 상황]에 있는 것만 쓰고 새로 계산하거나 지어내지 마세요. "
-    "예측은 추정치라서 실제와 다를 수 있다는 점을 부드럽게 알려 주세요. 모르는 것은 모른다고 말하세요."
+    "예측은 추정치라서 실제와 다를 수 있다는 점을 부드럽게 알려 주세요. 모르는 것은 모른다고 말하세요. "
+    "단위를 정확히 구분하세요: 주문은 '박스', 재고와 판매 예상은 '개'입니다. 개수를 박스로 바꿔 말하지 마세요. "
+    "이전 대화의 숫자는 옛 조건 기준일 수 있으니 반드시 [현재 상황]의 숫자만 사용하세요."
 )
 
 cover_days = (order_df["재고"] + order_df["입고예정"]) / np.maximum(0.1, order_df["예측(평균)"] / lead_days)
@@ -538,6 +543,8 @@ risk_items = order_df.loc[risk_mask, "품목"].tolist()
 
 
 def build_context() -> str:
+    total_boxes = int(order_df["최종"].sum())
+    total_pieces = int((order_df["최종"] * order_df["입수"]).sum())
     rows = "\n".join(
         f"- {r['품목']}: {lead_days}일 예상 판매 보통 {r['예측(평균)']:.0f}개 "
         f"(적게 {r['하위10%']:.0f}~많이 {r['상위90%']:.0f}개), 지금 재고(추정) {int(r['재고'])}개, "
@@ -549,7 +556,8 @@ def build_context() -> str:
         f"앞으로 {lead_days}일 날씨: 평균 {avg_t:.1f}°C(최고 {max_t:.1f}°C), 습도 {avg_h:.0f}%, "
         f"무더위 정도 {di_label}, 비 {tot_r:.1f}mm\n"
         f"발주 스타일: {mode_label}\n"
-        f"다음 입고 전에 떨어질 수 있는 품목: {risk_items if risk_items else '없음'}\n{rows}"
+        f"다음 입고 전에 떨어질 수 있는 품목: {risk_items if risk_items else '없음'}\n"
+        f"주문 합계: {total_boxes}박스 (낱개로 {total_pieces}개)\n{rows}"
     )
 
 
@@ -572,6 +580,7 @@ def run_chat(question: str):
         except Exception as e:
             answer = f"AI 도우미 연결에 문제가 생겼어요: {e}"
     st.session_state["chat"].append({"role": "assistant", "content": answer})
+    st.session_state["chat_ctx"] = build_context()
 
 
 with ai_box:
@@ -581,6 +590,8 @@ with ai_box:
     for m in st.session_state["chat"]:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
+    if st.session_state["chat"] and st.session_state.get("chat_ctx") != build_context():
+        st.info("발주 스타일이나 재고가 바뀌어서 위 답변은 이전 기준이에요. 다시 물어보시면 새 기준으로 알려 드려요.")
     q_btn = st.button("오늘 뭘 주문하면 좋을지 알려 주세요", use_container_width=True)
     with st.form("ask_form", clear_on_submit=True):
         q_text = st.text_input("궁금한 점을 적어 주세요", placeholder="예: 비 오는 날은 어떤 게 덜 팔려요?")
@@ -602,6 +613,7 @@ with order_box:
         "상태": np.where(risk_mask, "🔴 서둘러 주문", "🟢 여유 있음"),
         "지금 재고(추정)": order_df["재고"],
         f"앞으로 {lead_days}일 예상 판매": [f"{a:.0f} ~ {b:.0f}개" for a, b in zip(order_df["하위10%"], order_df["상위90%"])],
+        "한 박스": [f"{int(x)}개입" for x in order_df["입수"]],
         "추천 주문": [f"{int(x)}박스" for x in order_df["추천(박스)"]],
         "최종 주문": [f"{int(x)}박스" for x in order_df["최종"]],
     })
